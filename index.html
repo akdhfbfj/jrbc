@@ -1,0 +1,432 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Shuffle, UserPlus, RotateCcw, Users, Info, ClipboardPaste, GraduationCap, CheckCircle2, Settings2, Grid3X3, Undo2, Star, Volume2 } from 'lucide-react';
+
+const App = () => {
+  // 설정 상태
+  const [studentCount, setStudentCount] = useState(25);
+  const [rows, setRows] = useState(5);
+  const [cols, setCols] = useState(5);
+
+  // 학생 명단 상태 (여유있게 40명까지 관리)
+  const [studentList, setStudentList] = useState(
+    Array.from({ length: 40 }, (_, i) => ({ id: i, name: '', note: '', isFront: false }))
+  );
+  
+  // 되돌리기 히스토리
+  const [history, setHistory] = useState([]);
+
+  // 좌석 및 애니메이션 상태
+  const [seats, setSeats] = useState([]);
+  const [revealOrder, setRevealOrder] = useState([]); // 랜덤하게 공개될 인덱스 순서
+  const [revealedIndices, setRevealedIndices] = useState(new Set()); // 공개 완료된 인덱스들
+  const [isCountingDown, setIsCountingDown] = useState(false);
+  const [countdown, setCountdown] = useState(5);
+  const [isRevealing, setIsRevealing] = useState(false);
+  const [currentRollingIndex, setCurrentRollingIndex] = useState(-1);
+  
+  const audioContextRef = useRef(null);
+
+  // 카드 배경 컬러 (파스텔 톤)
+  const bgColors = [
+    'bg-rose-50 border-rose-200', 'bg-blue-50 border-blue-200', 'bg-emerald-50 border-emerald-200', 
+    'bg-orange-50 border-orange-200', 'bg-violet-50 border-violet-200', 'bg-pink-50 border-pink-200', 
+    'bg-cyan-50 border-cyan-200', 'bg-amber-50 border-amber-200', 'bg-indigo-50 border-indigo-200', 
+    'bg-lime-50 border-lime-200', 'bg-teal-50 border-teal-200', 'bg-fuchsia-50 border-fuchsia-200'
+  ];
+
+  // 오디오 컨텍스트 초기화
+  const initAudio = async () => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioContextRef.current.state === 'suspended') {
+      await audioContextRef.current.resume();
+    }
+  };
+
+  // 효과음 재생
+  const playSound = (freq, type = 'sine', duration = 0.1, volume = 0.15) => {
+    try {
+      const ctx = audioContextRef.current;
+      if (!ctx) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, ctx.currentTime);
+      gain.gain.setValueAtTime(volume, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + duration);
+    } catch (e) {}
+  };
+
+  const playLadderMelody = (step) => {
+    const scale = [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25, 587.33, 659.25];
+    const freq = scale[step % scale.length];
+    playSound(freq, 'square', 0.15, 0.1); 
+  };
+
+  const playSuccessSound = () => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+    [523.25, 659.25, 783.99, 1046.50].forEach((f, i) => {
+      setTimeout(() => playSound(f, 'sine', 0.6, 0.15), i * 150);
+    });
+  };
+
+  const saveToHistory = () => {
+    setHistory(prev => [JSON.parse(JSON.stringify(studentList)), ...prev].slice(0, 10));
+  };
+
+  const handleUndo = () => {
+    if (history.length === 0) return;
+    setStudentList(history[0]);
+    setHistory(prev => prev.slice(1));
+    playSound(330, 'sine', 0.1, 0.1);
+  };
+
+  const handleInputChange = (index, field, value) => {
+    saveToHistory();
+    const newList = [...studentList];
+    newList[index][field] = value;
+    if (field === 'note') {
+      newList[index].isFront = value.includes('앞');
+    }
+    setStudentList(newList);
+  };
+
+  // 붙여넣기 로직: 엑셀의 다중 열(Column) 데이터를 정확하게 분산 입력
+  const handlePaste = (e, startIndex, startField) => {
+    e.preventDefault();
+    saveToHistory();
+    let pasteData = e.clipboardData.getData('text');
+    
+    // 엑셀 복사 시 발생하는 앞뒤 불필요한 줄바꿈만 제거 (중간 빈 줄은 유지)
+    pasteData = pasteData.replace(/^[\r\n]+|[\r\n]+$/g, ''); 
+    
+    let rowsData = pasteData.split(/\r\n|\n|\r/);
+    const newList = [...studentList];
+
+    rowsData.forEach((row, rowIndex) => {
+      const targetRowIndex = startIndex + rowIndex;
+      if (targetRowIndex < newList.length) {
+        // 탭(\t)은 엑셀에서 열을 구분하는 표준 구분자
+        const columns = row.split('\t');
+        
+        if (startField === 'name') {
+          // 이름 칸에서 붙여넣기를 시작한 경우
+          if (columns[0] !== undefined) {
+            newList[targetRowIndex].name = columns[0].trim();
+          }
+          if (columns[1] !== undefined) {
+            const noteText = columns[1].trim();
+            newList[targetRowIndex].note = noteText;
+            newList[targetRowIndex].isFront = noteText.includes('앞');
+          }
+        } else if (startField === 'note') {
+          // 비고 칸에서 붙여넣기를 시작한 경우 (첫 번째 열을 비고에 입력)
+          if (columns[0] !== undefined) {
+            const noteText = columns[0].trim();
+            newList[targetRowIndex].note = noteText;
+            newList[targetRowIndex].isFront = noteText.includes('앞');
+          }
+        }
+      }
+    });
+    setStudentList(newList);
+    playSound(440, 'sine', 0.2, 0.12);
+  };
+
+  const shuffleArray = (arr) => {
+    const newArr = [...arr];
+    for (let i = newArr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+    }
+    return newArr;
+  };
+
+  const startShuffle = async () => {
+    await initAudio();
+    if (isCountingDown || isRevealing) return;
+    
+    const activeStudents = studentList.filter(s => s.name.trim() !== "").slice(0, studentCount);
+    if (activeStudents.length === 0) return;
+
+    const frontStudents = shuffleArray(activeStudents.filter(s => s.isFront));
+    const normalStudents = shuffleArray(activeStudents.filter(s => !s.isFront));
+
+    const totalCells = rows * cols;
+    const finalSeats = Array(totalCells).fill(null);
+    const frontIndices = [];
+    for (let r = 0; r < Math.min(2, rows); r++) {
+      for (let c = 0; c < cols; c++) frontIndices.push(r * cols + c);
+    }
+    const backIndices = Array.from({length: totalCells}, (_, i) => i).filter(i => !frontIndices.includes(i));
+
+    frontStudents.forEach((student, i) => {
+      if (i < frontIndices.length) finalSeats[frontIndices[i]] = student;
+      else normalStudents.push(student);
+    });
+
+    const remainingIndices = [...frontIndices.slice(frontStudents.length), ...backIndices];
+    const finalShuffledNormal = shuffleArray(normalStudents);
+    remainingIndices.forEach((seatIdx, i) => {
+      if (finalShuffledNormal[i]) finalSeats[seatIdx] = finalShuffledNormal[i];
+    });
+
+    // 공개 순서를 랜덤하게 생성
+    const order = shuffleArray(Array.from({ length: totalCells }, (_, i) => i));
+    
+    setSeats(finalSeats);
+    setRevealOrder(order);
+    setRevealedIndices(new Set());
+    setIsCountingDown(true);
+    setCountdown(5);
+  };
+
+  useEffect(() => {
+    if (isCountingDown && countdown > 0) {
+      const timer = setTimeout(() => {
+        playSound(440, 'sine', 0.1, 0.15);
+        setCountdown(countdown - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    } else if (isCountingDown && countdown === 0) {
+      setIsCountingDown(false);
+      setIsRevealing(true);
+      playSound(880, 'sine', 0.5, 0.25);
+    }
+  }, [isCountingDown, countdown]);
+
+  useEffect(() => {
+    if (isRevealing) {
+      const currentRevealCount = revealedIndices.size;
+      if (currentRevealCount < revealOrder.length) {
+        const nextIndex = revealOrder[currentRevealCount];
+        setCurrentRollingIndex(nextIndex);
+        
+        // 배정 속도: 1초(1000ms)
+        const timer = setTimeout(() => {
+          setRevealedIndices(prev => new Set(prev).add(nextIndex));
+          if (seats[nextIndex]) {
+            playLadderMelody(currentRevealCount);
+          }
+        }, 1000); 
+        return () => clearTimeout(timer);
+      } else {
+        setIsRevealing(false);
+        setCurrentRollingIndex(-1);
+        playSuccessSound();
+      }
+    }
+  }, [isRevealing, revealedIndices, revealOrder, seats]);
+
+  const handleReset = () => {
+    saveToHistory();
+    setSeats([]);
+    setRevealedIndices(new Set());
+    setIsCountingDown(false);
+    setIsRevealing(false);
+    setStudentList(Array.from({ length: 40 }, (_, i) => ({ id: i, name: '', note: '', isFront: false })));
+  };
+
+  return (
+    <div className="min-h-screen bg-white text-slate-800 p-4 md:p-8 font-sans select-none">
+      <div className="max-w-7xl mx-auto">
+        
+        {/* Countdown Overlay */}
+        {isCountingDown && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/95 backdrop-blur-md">
+            <div className="text-center">
+              <div className="text-[22rem] font-black text-blue-600 drop-shadow-2xl animate-pulse leading-none">
+                {countdown}
+              </div>
+              <div className="text-4xl mt-4 font-black text-slate-300 tracking-[1.5em] ml-[1.5em] uppercase">Get Ready</div>
+            </div>
+          </div>
+        )}
+
+        <header className="mb-10 text-center relative">
+          <div className="inline-flex items-center gap-3 px-6 py-2 bg-blue-50 border border-blue-100 rounded-full text-blue-600 mb-6 shadow-sm">
+            <GraduationCap size={20} />
+            <span className="text-xs font-bold tracking-widest uppercase italic">Opo Elementary School</span>
+          </div>
+          <h1 className="text-5xl md:text-6xl font-black tracking-tight mb-4 text-slate-900">
+            오포초 5학년 3반 <span className="text-blue-600">자리 뽑기</span>
+          </h1>
+          <div className="h-2 w-48 bg-blue-600 mx-auto rounded-full shadow-lg"></div>
+        </header>
+
+        {/* Global Settings */}
+        <div className="mb-10 grid grid-cols-1 md:grid-cols-4 gap-4">
+          {[
+            { icon: Users, label: "학급 인원수", val: studentCount, set: setStudentCount },
+            { icon: Settings2, label: "가로 (분단)", val: cols, set: setCols },
+            { icon: Grid3X3, label: "세로 (줄)", val: rows, set: setRows }
+          ].map((item, i) => (
+            <div key={i} className="bg-white p-4 rounded-3xl border border-slate-200 shadow-sm flex items-center gap-4 hover:border-blue-300 transition-colors">
+              <div className="p-2 bg-blue-50 rounded-xl"><item.icon className="text-blue-500" size={20} /></div>
+              <div className="flex-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">{item.label}</label>
+                <input type="number" value={item.val} onChange={(e) => item.set(Number(e.target.value))} className="w-full bg-transparent border-none focus:ring-0 text-xl font-black text-slate-700 p-0" />
+              </div>
+            </div>
+          ))}
+          <div className="bg-blue-600 p-4 rounded-3xl shadow-xl flex items-center justify-center cursor-pointer hover:bg-blue-700 transition-all active:scale-95 shadow-blue-200" onClick={startShuffle}>
+            <div className="flex items-center gap-2 text-white font-black text-lg">
+              <Shuffle size={24} className={isRevealing ? "animate-spin" : ""} />
+              배치 시작
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-10 items-start">
+          
+          {/* List Input Panel */}
+          <div className="xl:col-span-4 space-y-6">
+            <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-xl overflow-hidden">
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-white sticky top-0 z-20">
+                <h3 className="text-sm font-bold flex items-center gap-2 text-slate-800">
+                  <ClipboardPaste size={16} className="text-blue-500" />
+                  명단 입력
+                </h3>
+                <button onClick={handleUndo} disabled={history.length === 0} className={`flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${history.length > 0 ? "bg-blue-50 text-blue-600 hover:bg-blue-100" : "text-slate-200 cursor-not-allowed"}`}><Undo2 size={12} /> 되돌리기</button>
+              </div>
+              
+              <div className="max-h-[500px] overflow-y-auto scrollbar-hide">
+                <table className="w-full text-left border-separate border-spacing-0">
+                  <tbody className="divide-y divide-slate-50">
+                    {studentList.map((student, idx) => (
+                      <tr key={idx} className={`group hover:bg-blue-50/20 transition-colors ${idx >= studentCount ? 'opacity-20 bg-slate-50' : ''}`}>
+                        <td className="pl-6 py-3 text-xs text-slate-300 font-mono font-bold w-12">{idx + 1}</td>
+                        <td className="px-1"><input type="text" value={student.name} onChange={(e) => handleInputChange(idx, 'name', e.target.value)} onPaste={(e) => handlePaste(e, idx, 'name')} placeholder={idx >= studentCount ? "여백" : "성명"} className="w-full bg-transparent border-none focus:ring-2 focus:ring-blue-100 rounded-lg text-sm py-2 px-2 text-slate-800 font-bold" /></td>
+                        <td className="px-1 pr-6">
+                          <div className="flex items-center gap-2">
+                            <input type="text" value={student.note} onChange={(e) => handleInputChange(idx, 'note', e.target.value)} onPaste={(e) => handlePaste(e, idx, 'note')} placeholder="비고" className={`w-full bg-transparent border-none focus:ring-2 focus:ring-blue-100 rounded-lg text-center text-[10px] py-2 px-1 ${student.isFront ? 'text-blue-500 font-bold' : 'text-slate-400'}`} />
+                            {student.isFront && <CheckCircle2 size={12} className="text-blue-500 shrink-0" />}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="p-4 border-t border-slate-100"><button onClick={handleReset} className="w-full py-2 text-slate-400 hover:text-red-500 font-bold text-xs transition-colors flex items-center justify-center gap-1"><RotateCcw size={12} /> 전체 초기화</button></div>
+            </div>
+          </div>
+
+          {/* Seat Grid Panel */}
+          <div className="xl:col-span-8 space-y-6">
+            <div className="bg-white p-10 md:p-14 rounded-[4rem] border border-slate-200 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-3 bg-gradient-to-r from-blue-600 to-indigo-600 shadow-sm"></div>
+              
+              {/* Blackboard Area */}
+              <div className="mb-20 text-center relative">
+                <div id="blackboard" className="inline-block px-24 py-8 bg-slate-800 border-b-[10px] border-slate-950 rounded-3xl shadow-2xl">
+                  <div className="flex items-center gap-3 justify-center mb-2">
+                     <Volume2 size={16} className="text-slate-600 animate-pulse" />
+                     <span className="text-xs font-black text-slate-500 tracking-[1.5em] ml-[1.5em] uppercase">5-3 CLASS BOARD</span>
+                  </div>
+                  <div className="h-10 flex items-center justify-center">
+                    {isRevealing && seats[currentRollingIndex] && (
+                      <div className="text-white text-3xl font-black animate-bounce tracking-widest drop-shadow-lg">
+                        {seats[currentRollingIndex].name}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Grid */}
+              <div className="grid gap-4 md:gap-6" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+                {seats.length > 0 ? (
+                  seats.map((student, index) => {
+                    const isRevealed = revealedIndices.has(index);
+                    const isCurrent = index === currentRollingIndex;
+                    
+                    const colorIndex = student ? student.id % bgColors.length : 0;
+                    const cardColorClass = isRevealed && student ? bgColors[colorIndex] : 'bg-slate-50 border-slate-100';
+
+                    return (
+                      <div
+                        key={index}
+                        className={`relative aspect-square flex flex-col items-center justify-center rounded-[2.5rem] transition-all duration-700 border-2 ${
+                          isRevealed 
+                            ? student 
+                              ? `${cardColorClass} shadow-md animate-in slide-in-from-top-20 zoom-in` 
+                              : "bg-slate-50 border-slate-100"
+                            : isCurrent
+                              ? "bg-blue-600 border-blue-600 shadow-2xl scale-110 z-20"
+                              : "bg-slate-50/50 border-slate-100 border-dashed"
+                        }`}
+                      >
+                        <div className="absolute top-3 left-4 text-[8px] font-black text-slate-300 uppercase">
+                          {Math.floor(index / cols) + 1}-{ (index % cols) + 1}
+                        </div>
+
+                        {isRevealed && student ? (
+                          <div className="text-center relative">
+                            {student.isFront && (
+                              <div className="absolute -top-6 left-1/2 -translate-x-1/2">
+                                <Star size={14} className="fill-amber-400 text-amber-400 drop-shadow-sm" />
+                              </div>
+                            )}
+                            <div className="text-xl md:text-3xl font-black tracking-tighter text-slate-800 drop-shadow-sm">
+                              {student.name}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`font-black text-3xl ${isCurrent ? "text-white" : "text-slate-100"}`}>
+                            ?
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="col-span-full py-24 border-4 border-dashed border-slate-100 rounded-[3rem] flex flex-col items-center justify-center text-slate-200 gap-4">
+                    <Grid3X3 size={64} className="opacity-10" />
+                    <p className="font-black tracking-widest uppercase text-sm opacity-30">배치 시작 버튼을 눌러주세요</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-16 grid grid-cols-5 text-center">
+                {Array.from({length: cols}).map((_, i) => (
+                  <div key={i} className="text-[10px] font-black text-slate-400 tracking-widest">{i + 1}분단</div>
+                ))}
+              </div>
+            </div>
+
+            {/* Instruction Card */}
+            <div className="p-8 bg-white border border-slate-200 rounded-[3rem] shadow-sm flex gap-6 items-center">
+              <div className="p-4 bg-blue-50 rounded-2xl shrink-0">
+                <Info className="text-blue-500" size={28} />
+              </div>
+              <div className="space-y-1">
+                <h4 className="font-bold text-slate-900">붙여넣기 안내</h4>
+                <p className="text-xs text-slate-500 leading-relaxed italic">
+                  "엑셀에서 **성명**과 **비고** 두 개 열을 드래그하여 복사한 뒤, 첫 번째 이름 칸에 붙여넣으시면 두 칸이 동시에 채워집니다!"
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        @keyframes slideIn {
+          from { transform: translateY(-100px); opacity: 0; scale: 0.5; }
+          to { transform: translateY(0); opacity: 1; scale: 1; }
+        }
+        .animate-in { animation: slideIn 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+      `}} />
+    </div>
+  );
+};
+
+export default App;
